@@ -1,0 +1,71 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    box-sizing: border-box;
+  }
+
+  html {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  body {
+    margin: 0;
+    padding: 0;
+    background: #f4f7f6;
+  }
+
+  /* Scrollbar personalizada */
+  ::-webkit-scrollbar {
+    width: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #d1d5db;
+    border-radius: 3px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: #9ca3af;
+  }
+}
+
+@layer components {
+  /* Typing animation dots */
+  .typing-dot {
+    @apply w-2 h-2 bg-movara-400 rounded-full inline-block mx-0.5;
+    animation: pulseDot 1.4s ease-in-out infinite;
+  }
+  .typing-dot:nth-child(1) { animation-delay: 0s; }
+  .typing-dot:nth-child(2) { animation-delay: 0.2s; }
+  .typing-dot:nth-child(3) { animation-delay: 0.4s; }
+
+  /* Markdown content inside assistant messages */
+  .prose-chat h1, .prose-chat h2, .prose-chat h3 {
+    @apply font-semibold text-gray-800 mt-4 mb-2;
+  }
+  .prose-chat h1 { @apply text-lg; }
+  .prose-chat h2 { @apply text-base; }
+  .prose-chat h3 { @apply text-sm; }
+  .prose-chat p { @apply mb-2 last:mb-0; }
+  .prose-chat ul { @apply list-disc pl-4 mb-2; }
+  .prose-chat ol { @apply list-decimal pl-4 mb-2; }
+  .prose-chat li { @apply mb-1; }
+  .prose-chat strong { @apply font-semibold; }
+  .prose-chat em { @apply italic; }
+  .prose-chat hr { @apply border-movara-200 my-3; }
+  .prose-chat table { @apply w-full border-collapse mb-3 text-sm; }
+  .prose-chat th { @apply bg-movara-100 text-movara-800 px-2 py-1 text-left font-semibold border border-movara-200; }
+  .prose-chat td { @apply px-2 py-1 border border-gray-200; }
+  .prose-chat tr:nth-child(even) td { @apply bg-gray-50; }
+}
+
+@keyframes pulseDot {
+  0%, 80%, 100% { transform: scale(0); opacity: 0.5; }
+  40% { transform: scale(1); opacity: 1; }
+}
