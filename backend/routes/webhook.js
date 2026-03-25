@@ -6,21 +6,25 @@ const { sendWelcomeEmail } = require('../services/email');
 
 // ============================================================
 // POST /webhook/hotmart
+// Hotmart envia este payload quando uma compra é aprovada
 // ============================================================
 router.post('/hotmart', async (req, res) => {
   try {
+    // Validação do token Hotmart (Hottok)
     const hottok = req.headers['x-hotmart-hottok'] || req.query.hottok;
     if (process.env.HOTMART_HOTTOK && hottok !== process.env.HOTMART_HOTTOK) {
-      console.warn('Webhook: Hottok invalido');
+      console.warn('Webhook: Hottok inválido');
       return res.status(401).json({ error: 'Unauthorized' });
     }
 
     const body = req.body;
     console.log('Webhook Hotmart recebido:', JSON.stringify(body, null, 2));
 
+    // Extrai evento e dados (Hotmart envia diferentes formatos por versão)
     const event = body.event || body.data?.purchase?.status;
     const purchaseData = body.data?.purchase || body.purchase || body;
 
+    // Apenas processa compras aprovadas
     const isApproved =
       event === 'PURCHASE_APPROVED' ||
       purchaseData?.status === 'APPROVED' ||
@@ -31,16 +35,19 @@ router.post('/hotmart', async (req, res) => {
       return res.status(200).json({ received: true, processed: false });
     }
 
-    const buyer = purchaseData?.buyer || body.buyer || {};
+    // Extrai dados do comprador
+    // v2.0.0: buyer está em body.data.buyer; versões anteriores: em purchaseData.buyer ou body.buyer
+    const buyer = body.data?.buyer || purchaseData?.buyer || body.buyer || {};
     const email = buyer.email || body.email;
-    const name = buyer.name || body.name || '';
-    const transactionId = purchaseData?.transaction || body.transaction || uuidv4();
+    const name = buyer.name || `${buyer.first_name || ''} ${buyer.last_name || ''}`.trim() || body.name || '';
+    const transactionId = purchaseData?.transaction || body.data?.purchase?.transaction || body.transaction || uuidv4();
 
     if (!email) {
-      console.error('Webhook: email nao encontrado no payload');
-      return res.status(400).json({ error: 'Email nao encontrado' });
+      console.error('Webhook: email não encontrado no payload');
+      return res.status(400).json({ error: 'Email não encontrado' });
     }
 
+    // Verifica se usuário já existe
     const { data: existingUser } = await supabase
       .from('users')
       .select('id, email, access_token')
@@ -51,6 +58,7 @@ router.post('/hotmart', async (req, res) => {
     const accessToken = uuidv4();
 
     if (existingUser) {
+      // Atualiza token de acesso
       await supabase
         .from('users')
         .update({
@@ -60,6 +68,7 @@ router.post('/hotmart', async (req, res) => {
         })
         .eq('id', existingUser.id);
     } else {
+      // Cria novo usuário
       const { data: newUser, error } = await supabase
         .from('users')
         .insert({
@@ -73,17 +82,19 @@ router.post('/hotmart', async (req, res) => {
         .single();
 
       if (error) {
-        console.error('Erro ao criar usuario:', error);
-        return res.status(500).json({ error: 'Erro ao criar usuario' });
+        console.error('Erro ao criar usuário:', error);
+        return res.status(500).json({ error: 'Erro ao criar usuário' });
       }
       user = newUser;
     }
 
+    // Envia email de boas-vindas com link de acesso
     try {
       await sendWelcomeEmail(email, name, accessToken);
-      console.log('Email de boas-vindas enviado para:', email);
+      console.log(`Email de boas-vindas enviado para: ${email}`);
     } catch (emailError) {
       console.error('Erro ao enviar email:', emailError);
+      // Não falha o webhook por erro de email
     }
 
     res.status(200).json({ received: true, processed: true });
@@ -95,7 +106,8 @@ router.post('/hotmart', async (req, res) => {
 });
 
 // ============================================================
-// POST /webhook/test (apenas desenvolvimento)
+// POST /webhook/test
+// Para testar sem Hotmart (somente em desenvolvimento)
 // ============================================================
 router.post('/test', async (req, res) => {
   if (process.env.NODE_ENV === 'production') {
@@ -103,7 +115,7 @@ router.post('/test', async (req, res) => {
   }
 
   const { email, name } = req.body;
-  if (!email) return res.status(400).json({ error: 'Email obrigatorio' });
+  if (!email) return res.status(400).json({ error: 'Email obrigatório' });
 
   const accessToken = uuidv4();
 
@@ -117,7 +129,7 @@ router.post('/test', async (req, res) => {
     success: true,
     email,
     access_token: accessToken,
-    access_link: (process.env.FRONTEND_URL || 'http://localhost:5173') + '/access?token=' + accessToken
+    access_link: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/access?token=${accessToken}`
   });
 });
 
