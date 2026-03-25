@@ -1,17 +1,32 @@
-const nodemailer = require('nodemailer');
+// ============================================================
+// Email service usando Resend (HTTP API) — funciona no Render free tier
+// SMTP é bloqueado no Render; Resend usa HTTPS na porta 443
+// ============================================================
 
-const transporter = nodemailer.createTransport({
-  host: process.env.EMAIL_HOST || 'smtp.gmail.com',
-  port: parseInt(process.env.EMAIL_PORT) || 587,
-  secure: false,
-  connectionTimeout: 8000,
-  greetingTimeout: 8000,
-  socketTimeout: 10000,
-  auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS
+const RESEND_API_URL = 'https://api.resend.com/emails';
+
+async function sendViaResend({ to, subject, html }) {
+  const apiKey = process.env.RESEND_API_KEY;
+  if (!apiKey) throw new Error('RESEND_API_KEY não configurada');
+
+  const from = process.env.EMAIL_FROM || 'Movara Coach <noreply@movara.app>';
+
+  const res = await fetch(RESEND_API_URL, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${apiKey}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ from, to, subject, html })
+  });
+
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`Resend error ${res.status}: ${err}`);
   }
-});
+
+  return res.json();
+}
 
 // ============================================================
 // Email de boas-vindas com link de acesso (após compra Hotmart)
@@ -21,8 +36,7 @@ async function sendWelcomeEmail(email, name, accessToken) {
   const accessLink = `${appUrl}/access?token=${accessToken}`;
   const firstName = name ? name.split(' ')[0] : '';
 
-  await transporter.sendMail({
-    from: process.env.EMAIL_FROM || 'Movara Coach <noreply@movara.app>',
+  await sendViaResend({
     to: email,
     subject: '¡Tu Coach Personal está listo! 🦵 — Movara',
     html: `
@@ -92,8 +106,7 @@ async function sendMagicLinkEmail(email, magicToken) {
   const appUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
   const magicLink = `${appUrl}/access?token=${magicToken}`;
 
-  await transporter.sendMail({
-    from: process.env.EMAIL_FROM || 'Movara Coach <noreply@movara.app>',
+  await sendViaResend({
     to: email,
     subject: 'Tu link de acceso a Movara — válido por 30 minutos',
     html: `
