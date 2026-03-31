@@ -6,6 +6,10 @@ const rateLimit = require('express-rate-limit');
 const app = express();
 const PORT = process.env.PORT || 3001;
 
+// Necessário para express-rate-limit funcionar corretamente no Render
+// (o load balancer do Render define o header X-Forwarded-For)
+app.set('trust proxy', 1);
+
 // ============================================================
 // CORS — permite requisições do frontend
 // ============================================================
@@ -20,8 +24,14 @@ const allowedOrigins = [
 
 app.use(cors({
   origin: function (origin, callback) {
+    // Permite requisições sem origin (ex: Postman, apps mobile nativos)
     if (!origin) return callback(null, true);
+    // Permite origens explícitas
     if (allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+    // Permite previews do Vercel (ex: movara-frontend-abc123.vercel.app)
+    if (origin.endsWith('.vercel.app')) {
       return callback(null, true);
     }
     console.warn('CORS bloqueado para origem:', origin);
@@ -42,13 +52,13 @@ app.use(express.urlencoded({ extended: true }));
 // Rate limiting
 // ============================================================
 const generalLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
+  windowMs: 15 * 60 * 1000, // 15 minutos
   max: 100,
   message: { error: 'Demasiadas solicitudes. Por favor espera un momento.' }
 });
 
 const chatLimiter = rateLimit({
-  windowMs: 60 * 1000,
+  windowMs: 60 * 1000, // 1 minuto
   max: 20,
   message: { error: 'Demasiados mensajes en poco tiempo. Por favor espera.' }
 });
