@@ -4,9 +4,20 @@ import { useAuth } from '../App'
 import MessageBubble from '../components/MessageBubble'
 import LoadingDots from '../components/LoadingDots'
 
-// ============================================================
-// Etapas da consultoria (para barra de progresso visual)
-// ============================================================
+async function fetchWithTimeout(url, options = {}, timeoutMs = 45000) {
+  const controller = new AbortController()
+  const id = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    const res = await fetch(url, { ...options, signal: controller.signal })
+    clearTimeout(id)
+    return res
+  } catch (err) {
+    clearTimeout(id)
+    if (err.name === 'AbortError') throw new Error('timeout')
+    throw err
+  }
+}
+
 const STAGES = [
   { id: 0, label: 'Bienvenida',    icon: '👋' },
   { id: 1, label: 'Perfil',        icon: '👤' },
@@ -28,106 +39,103 @@ export default function ChatPage() {
   const [isInitializing, setIsInitializing] = useState(true)
   const [currentStage, setCurrentStage] = useState(0)
   const [sidebarOpen, setSidebarOpen] = useState(false)
+  const [initError, setInitError] = useState('')
 
   const messagesEndRef = useRef(null)
   const textareaRef = useRef(null)
 
-  // Scroll automático para última mensagem
   const scrollToBottom = useCallback(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [])
 
   useEffect(() => { scrollToBottom() }, [messages, isLoading])
 
-  // Carrega ou cria consulta ativa
   useEffect(() => {
-    loadConsultation()
+    function handleResize() {
+      if (window.innerWidth >= 768) setSidebarOpen(false)
+    }
+    window.addEventListener('resize', handleResize)
+    return () => window.removeEventListener('resize', handleResize)
   }, [])
 
+  useEffect(() => { loadConsultation() }, [])
+
   async function loadConsultation() {
+    setInitError('')
     try {
-      const res = await fetch(`${apiUrl}/chat/consultation`, {
+      const res = await fetchWithTimeout(`${apiUrl}/chat/consultation`, {
         headers: { Authorization: `Bearer ${token}` }
       })
       if (res.status === 401) { logout(); navigate('/access'); return; }
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        throw new Error(data.error || `Error ${res.status}`)
+      }
       const data = await res.json()
       if (data.consultation) {
         setConsultation(data.consultation)
         setMessages(data.consultation.messages || [])
         setCurrentStage(data.consultation.current_stage || 0)
-
-        // Se não há mensagens, inicia a consulta automaticamente
         if (!data.consultation.messages?.length) {
           await startConsultation(data.consultation.id)
         }
       }
     } catch (err) {
       console.error('Erro ao carregar consulta:', err)
+      setInitError(err.message === 'timeout'
+        ? 'El servidor tardó demasiado en responder. Por favor recarga la página.'
+        : 'No se pudo conectar al servidor. Por favor recarga la página.')
     } finally {
       setIsInitializing(false)
     }
   }
 
-  // Primeira mensagem automática do coach
   async function startConsultation(consultationId) {
     setIsLoading(true)
     try {
-      const res = await fetch(`${apiUrl}/chat/message`, {
+      const res = await fetchWithTimeout(`${apiUrl}/chat/message`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`
-        },
-        body: JSON.stringify({
-          message: 'Hola, acabo de comprar el programa.',
-          consultationId
-        })
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ message: 'Hola, acabo de comprar el programa.', consultationId })
       })
+      if (res.status === 401) { logout(); navigate('/access'); return; }
       if (!res.ok) return
       const data = await res.json()
       setMessages(data.messages)
     } catch (err) {
-      console.error(err)
+      console.error('Error al iniciar consulta:', err)
     } finally {
       setIsLoading(false)
     }
   }
 
-  // Envia mensagem do usuário
   async function sendMessage() {
     const msg = input.trim()
     if (!msg || isLoading || !consultation) return
-
     setInput('')
     setIsLoading(true)
-
-    // Otimisticamente adiciona a mensagem do usuário
+    if (textareaRef.current) textareaRef.current.style.height = 'auto'
     const optimisticMsg = { role: 'user', content: msg, timestamp: new Date().toISOString() }
     setMessages(prev => [...prev, optimisticMsg])
-
     try {
-      const res = await fetch(`${apiUrl}/chat/message`, {
+      const res = await fetchWithTimeout(`${apiUrl}/chat/message`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`
-        },
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({ message: msg, consultationId: consultation.id })
       })
-
       if (res.status === 401) { logout(); navigate('/access'); return; }
-
       const data = await res.json()
       if (res.ok) {
         setMessages(data.messages)
       } else {
-        // Remove mensagem otimística em caso de erro
         setMessages(prev => prev.slice(0, -1))
         alert(data.error || 'Error al enviar el mensaje. Por favor intenta de nuevo.')
       }
-    } catch {
+    } catch (err) {
       setMessages(prev => prev.slice(0, -1))
-      alert('Error de conexión. Por favor intenta de nuevo.')
+      alert(err.message === 'timeout'
+        ? 'El servidor tardó demasiado. Por favor intenta de nuevo.'
+        : 'Error de conexión. Por favor intenta de nuevo.')
     } finally {
       setIsLoading(false)
       textareaRef.current?.focus()
@@ -135,13 +143,12 @@ export default function ChatPage() {
   }
 
   function handleKeyDown(e) {
-    if (e.key === 'Enter' && !e.shiftKey) {
+    if (e.key === 'Enter' && !e.shiftKey && window.innerWidth >= 768) {
       e.preventDefault()
       sendMessage()
     }
   }
 
-  // Textarea auto-resize
   function handleInputChange(e) {
     setInput(e.target.value)
     e.target.style.height = 'auto'
@@ -152,9 +159,8 @@ export default function ChatPage() {
     if (!confirm('¿Iniciar una nueva consulta de check-in? Tu historial anterior se guardará.')) return
     setIsInitializing(true)
     try {
-      const res = await fetch(`${apiUrl}/chat/new-session`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}` }
+      const res = await fetchWithTimeout(`${apiUrl}/chat/new-session`, {
+        method: 'POST', headers: { Authorization: `Bearer ${token}` }
       })
       const data = await res.json()
       if (res.ok) {
@@ -171,40 +177,41 @@ export default function ChatPage() {
     }
   }
 
-  // ============================================================
-  // Loading inicial
-  // ============================================================
   if (isInitializing) {
     return (
-      <div className="min-h-screen bg-movara-50 flex items-center justify-center">
-        <div className="text-center">
-          <div className="w-12 h-12 border-4 border-movara-200 border-t-movara-600 rounded-full animate-spin mx-auto mb-4"
-               style={{ borderWidth: '3px' }} />
+      <div className="bg-movara-50 flex items-center justify-center" style={{ height: '100dvh' }}>
+        <div className="text-center px-4">
+          <div className="w-12 h-12 border-4 border-movara-200 border-t-movara-600 rounded-full animate-spin mx-auto mb-4" style={{ borderWidth: '3px' }} />
           <p className="text-movara-600 font-medium">Preparando tu coach...</p>
+          <p className="text-movara-400 text-xs mt-1">Puede tardar unos segundos la primera vez</p>
         </div>
       </div>
     )
   }
 
-  // ============================================================
-  // UI Principal
-  // ============================================================
-  return (
-    <div className="flex h-screen bg-gray-50 overflow-hidden">
+  if (initError) {
+    return (
+      <div className="bg-movara-50 flex items-center justify-center p-4" style={{ height: '100dvh' }}>
+        <div className="text-center max-w-sm">
+          <div className="text-5xl mb-4">⚠️</div>
+          <h3 className="font-semibold text-gray-700 mb-2">Error de conexión</h3>
+          <p className="text-gray-500 text-sm mb-6">{initError}</p>
+          <button onClick={() => { setIsInitializing(true); setInitError(''); loadConsultation() }}
+            className="bg-movara-600 text-white px-6 py-3 rounded-xl font-medium hover:bg-movara-700 transition-colors">
+            Reintentar
+          </button>
+        </div>
+      </div>
+    )
+  }
 
-      {/* ---- SIDEBAR (mobile: overlay, desktop: fixo) ---- */}
+  return (
+    <div className="flex bg-gray-50 overflow-hidden" style={{ height: '100dvh' }}>
       {sidebarOpen && (
-        <div
-          className="fixed inset-0 bg-black/40 z-20 md:hidden"
-          onClick={() => setSidebarOpen(false)}
-        />
+        <div className="fixed inset-0 bg-black/40 z-20 md:hidden" onClick={() => setSidebarOpen(false)} />
       )}
-      <aside className={`
-        fixed md:relative z-30 top-0 left-0 h-full w-72 bg-white border-r border-gray-100
-        flex flex-col shadow-xl md:shadow-none transition-transform duration-300
-        ${sidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}
-      `}>
-        {/* Logo */}
+      <aside className={`fixed md:relative z-30 top-0 left-0 h-full w-72 bg-white border-r border-gray-100 flex flex-col shadow-xl md:shadow-none transition-transform duration-300 ${sidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}`}
+        style={{ paddingTop: 'env(safe-area-inset-top)', paddingBottom: 'env(safe-area-inset-bottom)' }}>
         <div className="p-5 border-b border-gray-100">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-movara-500 to-movara-700 flex items-center justify-center shadow-sm">
@@ -216,162 +223,92 @@ export default function ChatPage() {
             </div>
           </div>
         </div>
-
-        {/* Progresso da consultoria */}
-        <div className="p-4 border-b border-gray-100">
-          <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">
-            Progreso de tu consulta
-          </p>
+        <div className="p-4 border-b border-gray-100 overflow-y-auto">
+          <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Progreso de tu consulta</p>
           <div className="space-y-1.5">
             {STAGES.map(stage => (
-              <div
-                key={stage.id}
-                className={`flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-all ${
-                  stage.id < currentStage
-                    ? 'bg-movara-50 text-movara-700'
-                    : stage.id === currentStage
-                    ? 'bg-movara-100 text-movara-800 font-semibold'
-                    : 'text-gray-400'
-                }`}
-              >
+              <div key={stage.id} className={`flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-all ${stage.id < currentStage ? 'bg-movara-50 text-movara-700' : stage.id === currentStage ? 'bg-movara-100 text-movara-800 font-semibold' : 'text-gray-400'}`}>
                 <span className="text-base">{stage.icon}</span>
                 <span>{stage.label}</span>
-                {stage.id < currentStage && (
-                  <span className="ml-auto text-movara-500 text-xs">✓</span>
-                )}
-                {stage.id === currentStage && (
-                  <span className="ml-auto w-1.5 h-1.5 bg-movara-500 rounded-full animate-pulse" />
-                )}
+                {stage.id < currentStage && <span className="ml-auto text-movara-500 text-xs">✓</span>}
+                {stage.id === currentStage && <span className="ml-auto w-1.5 h-1.5 bg-movara-500 rounded-full animate-pulse" />}
               </div>
             ))}
           </div>
         </div>
-
-        {/* Info do usuário */}
         <div className="p-4 mt-auto border-t border-gray-100">
           <div className="flex items-center gap-3 mb-3">
-            <div className="w-8 h-8 rounded-full bg-gray-100 flex items-center justify-center text-sm">
-              👤
-            </div>
+            <div className="w-8 h-8 rounded-full bg-gray-100 flex items-center justify-center text-sm">👤</div>
             <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium text-gray-700 truncate">
-                {user?.name || user?.email}
-              </p>
-              {user?.name && (
-                <p className="text-xs text-gray-400 truncate">{user.email}</p>
-              )}
+              <p className="text-sm font-medium text-gray-700 truncate">{user?.name || user?.email}</p>
+              {user?.name && <p className="text-xs text-gray-400 truncate">{user.email}</p>}
             </div>
           </div>
-          <button
-            onClick={startNewSession}
-            className="w-full text-sm py-2 px-3 border border-movara-200 text-movara-700 rounded-lg hover:bg-movara-50 transition-colors mb-2"
-          >
+          <button onClick={startNewSession} className="w-full text-sm py-2 px-3 border border-movara-200 text-movara-700 rounded-lg hover:bg-movara-50 transition-colors mb-2">
             + Nueva consulta (check-in)
           </button>
-          <button
-            onClick={() => { logout(); navigate('/access') }}
-            className="w-full text-sm py-2 px-3 text-gray-400 rounded-lg hover:text-gray-600 hover:bg-gray-50 transition-colors"
-          >
+          <button onClick={() => { logout(); navigate('/access') }} className="w-full text-sm py-2 px-3 text-gray-400 rounded-lg hover:text-gray-600 hover:bg-gray-50 transition-colors">
             Cerrar sesión
           </button>
         </div>
       </aside>
 
-      {/* ---- MAIN CHAT AREA ---- */}
       <main className="flex-1 flex flex-col min-w-0">
-
-        {/* Top bar */}
-        <header className="bg-white border-b border-gray-100 px-4 py-3 flex items-center gap-3 flex-shrink-0 shadow-sm">
-          <button
-            onClick={() => setSidebarOpen(true)}
-            className="md:hidden p-2 rounded-lg hover:bg-gray-100 text-gray-600"
-          >
-            ☰
-          </button>
-          <div className="flex items-center gap-2 flex-1">
-            <div className="w-8 h-8 rounded-full bg-gradient-to-br from-movara-500 to-movara-700 flex items-center justify-center text-sm shadow-sm">
-              🦵
-            </div>
-            <div>
+        <header className="bg-white border-b border-gray-100 px-4 py-3 flex items-center gap-3 flex-shrink-0 shadow-sm"
+          style={{ paddingTop: 'max(0.75rem, env(safe-area-inset-top))' }}>
+          <button onClick={() => setSidebarOpen(true)} className="md:hidden p-2 rounded-lg hover:bg-gray-100 text-gray-600 flex-shrink-0" aria-label="Abrir menú">☰</button>
+          <div className="flex items-center gap-2 flex-1 min-w-0">
+            <div className="w-8 h-8 rounded-full bg-gradient-to-br from-movara-500 to-movara-700 flex items-center justify-center text-sm shadow-sm flex-shrink-0">🦵</div>
+            <div className="min-w-0">
               <p className="font-semibold text-gray-800 text-sm leading-none">Coach Movara</p>
-              <p className="text-xs text-movara-500 mt-0.5">
-                {isLoading ? 'Escribiendo...' : 'En línea'}
-              </p>
+              <p className="text-xs text-movara-500 mt-0.5">{isLoading ? 'Escribiendo...' : 'En línea'}</p>
             </div>
           </div>
-          <div className="hidden sm:flex items-center gap-1.5 text-xs text-gray-400">
+          <div className="hidden sm:flex items-center gap-1.5 text-xs text-gray-400 flex-shrink-0">
             <span className="w-1.5 h-1.5 bg-green-400 rounded-full" />
             Sesión {consultation?.session_number || 1}
           </div>
         </header>
 
-        {/* Messages area */}
         <div className="flex-1 overflow-y-auto px-4 py-6 space-y-4">
           {messages.length === 0 && !isLoading && (
             <div className="flex flex-col items-center justify-center h-full text-center py-20">
               <div className="text-5xl mb-4">🦵</div>
               <h3 className="font-semibold text-gray-600 mb-2">Tu coach está listo</h3>
-              <p className="text-gray-400 text-sm max-w-xs">
-                Estamos preparando tu consulta personalizada...
-              </p>
+              <p className="text-gray-400 text-sm max-w-xs">Estamos preparando tu consulta personalizada...</p>
             </div>
           )}
-
-          {messages.map((msg, i) => (
-            <MessageBubble key={i} message={msg} />
-          ))}
-
-          {/* Typing indicator */}
+          {messages.map((msg, i) => (<MessageBubble key={i} message={msg} />))}
           {isLoading && (
             <div className="flex items-center gap-2 animate-fade-in">
-              <div className="w-8 h-8 rounded-full bg-gradient-to-br from-movara-500 to-movara-700 flex items-center justify-center text-sm flex-shrink-0">
-                🦵
-              </div>
-              <div className="bg-white border border-gray-100 rounded-2xl rounded-tl-sm px-4 py-3 shadow-sm">
-                <LoadingDots />
-              </div>
+              <div className="w-8 h-8 rounded-full bg-gradient-to-br from-movara-500 to-movara-700 flex items-center justify-center text-sm flex-shrink-0">🦵</div>
+              <div className="bg-white border border-gray-100 rounded-2xl rounded-tl-sm px-4 py-3 shadow-sm"><LoadingDots /></div>
             </div>
           )}
-
           <div ref={messagesEndRef} />
         </div>
 
-        {/* Input area */}
-        <div className="bg-white border-t border-gray-100 p-4 flex-shrink-0">
+        <div className="bg-white border-t border-gray-100 p-4 flex-shrink-0"
+          style={{ paddingBottom: 'max(1rem, env(safe-area-inset-bottom))' }}>
           <div className="flex items-end gap-3 max-w-4xl mx-auto">
             <div className="flex-1 bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 focus-within:border-movara-400 focus-within:ring-2 focus-within:ring-movara-100 transition-all">
-              <textarea
-                ref={textareaRef}
-                value={input}
-                onChange={handleInputChange}
-                onKeyDown={handleKeyDown}
-                placeholder="Escribe tu mensaje..."
-                rows={1}
-                disabled={isLoading}
+              <textarea ref={textareaRef} value={input} onChange={handleInputChange} onKeyDown={handleKeyDown}
+                placeholder="Escribe tu mensaje..." rows={1} disabled={isLoading}
                 className="w-full bg-transparent text-sm text-gray-800 placeholder-gray-400 resize-none focus:outline-none leading-relaxed disabled:opacity-50"
-                style={{ minHeight: '24px', maxHeight: '120px' }}
-              />
+                style={{ minHeight: '24px', maxHeight: '120px' }} />
             </div>
-            <button
-              onClick={sendMessage}
-              disabled={isLoading || !input.trim()}
-              className="flex-shrink-0 w-11 h-11 bg-gradient-to-br from-movara-600 to-movara-500 text-white rounded-xl flex items-center justify-center shadow-md hover:shadow-lg hover:from-movara-700 hover:to-movara-600 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
-            >
-              {isLoading ? (
-                <span className="text-xs">...</span>
-              ) : (
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                  <line x1="22" y1="2" x2="11" y2="13" />
-                  <polygon points="22 2 15 22 11 13 2 9 22 2" />
-                </svg>
-              )}
+            <button onClick={sendMessage} disabled={isLoading || !input.trim()}
+              className="flex-shrink-0 w-12 h-12 bg-gradient-to-br from-movara-600 to-movara-500 text-white rounded-xl flex items-center justify-center shadow-md hover:shadow-lg hover:from-movara-700 hover:to-movara-600 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+              aria-label="Enviar mensaje">
+              {isLoading
+                ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                : <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="22" y1="2" x2="11" y2="13" /><polygon points="22 2 15 22 11 13 2 9 22 2" /></svg>
+              }
             </button>
           </div>
-          <p className="text-center text-xs text-gray-300 mt-2">
-            Enter para enviar · Shift+Enter para nueva línea
-          </p>
+          <p className="text-center text-xs text-gray-300 mt-2 hidden sm:block">Enter para enviar · Shift+Enter para nueva línea</p>
         </div>
       </main>
     </div>
   )
-}
+              }
