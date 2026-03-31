@@ -9,14 +9,27 @@ const PORT = process.env.PORT || 3001;
 // ============================================================
 // CORS — permite requisições do frontend
 // ============================================================
+const allowedOrigins = [
+  'https://movara.space',
+  'https://www.movara.space',
+  'https://movara-frontend.vercel.app',
+  process.env.FRONTEND_URL,
+  'http://localhost:5173',
+  'http://localhost:3000'
+].filter(Boolean);
+
 app.use(cors({
-  origin: [
-    process.env.FRONTEND_URL || 'http://localhost:5173',
-    'http://localhost:5173',
-    'http://localhost:3000'
-  ],
-  methods: ['GET', 'POST', 'PUT', 'DELETE'],
-  allowedHeaders: ['Content-Type', 'Authorization']
+  origin: function (origin, callback) {
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+    console.warn('CORS bloqueado para origem:', origin);
+    return callback(new Error('Origem não permitida pelo CORS'));
+  },
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: true
 }));
 
 // ============================================================
@@ -29,13 +42,13 @@ app.use(express.urlencoded({ extended: true }));
 // Rate limiting
 // ============================================================
 const generalLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutos
+  windowMs: 15 * 60 * 1000,
   max: 100,
   message: { error: 'Demasiadas solicitudes. Por favor espera un momento.' }
 });
 
 const chatLimiter = rateLimit({
-  windowMs: 60 * 1000, // 1 minuto
+  windowMs: 60 * 1000,
   max: 20,
   message: { error: 'Demasiados mensajes en poco tiempo. Por favor espera.' }
 });
